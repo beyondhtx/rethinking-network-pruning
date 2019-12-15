@@ -42,7 +42,7 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--save', default='./logs', type=str, metavar='PATH',
+parser.add_argument('--save', default='./prune_logs', type=str, metavar='PATH',
                     help='path to save prune model (default: current directory)')
 parser.add_argument('--arch', default='vgg', type=str, 
                     help='architecture to use')
@@ -103,7 +103,7 @@ if args.refine:
     model.load_state_dict(checkpoint['state_dict'])
 
 if args.cuda:
-    model.cuda()
+    model = nn.DataParallel(model).cuda()
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
@@ -131,7 +131,7 @@ def train(epoch):
         optimizer.zero_grad()
         output = model(data)
         loss = F.cross_entropy(output, target)
-        avg_loss += loss.data[0]
+        avg_loss += loss.data.item()
         pred = output.data.max(1, keepdim=True)[1]
         train_acc += pred.eq(target.data.view_as(pred)).cpu().sum()
         loss.backward()
@@ -139,26 +139,27 @@ def train(epoch):
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.1f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.data[0]))
+                100. * batch_idx / len(train_loader), loss.data.item()))
 
 def test():
     model.eval()
     test_loss = 0
     correct = 0
-    for data, target in test_loader:
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        data, target = Variable(data, volatile=True), Variable(target)
-        output = model(data)
-        test_loss += F.cross_entropy(output, target, size_average=False).data[0] # sum up batch loss
-        pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
-        correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+    with torch.no_grad():
+        for data, target in test_loader:
+            if args.cuda:
+                data, target = data.cuda(), target.cuda()
+            data, target = Variable(data), Variable(target)
+            output = model(data)
+            test_loss += F.cross_entropy(output, target, size_average=False).data.item() # sum up batch loss
+            pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+            correct += pred.eq(target.data.view_as(pred)).cpu().sum()
 
     test_loss /= len(test_loader.dataset)
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.1f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
-    return correct / float(len(test_loader.dataset))
+    return float(correct) / float(len(test_loader.dataset))
 
 def save_checkpoint(state, is_best, filepath):
     torch.save(state, os.path.join(filepath, 'checkpoint.pth.tar'))
@@ -173,8 +174,8 @@ for epoch in range(args.start_epoch, args.epochs):
     best_prec1 = max(prec1, best_prec1)
     save_checkpoint({
         'epoch': epoch + 1,
-        'state_dict': model.state_dict(),
+        'state_dict': model.module.state_dict(),
         'best_prec1': best_prec1,
         'optimizer': optimizer.state_dict(),
-        'cfg': model.cfg
+        'cfg': model.module.cfg
     }, is_best, filepath=args.save)

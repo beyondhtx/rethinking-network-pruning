@@ -20,9 +20,9 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 parser.add_argument('--depth', type=int, default=16,
                     help='depth of the vgg')
-parser.add_argument('--model', default='', type=str, metavar='PATH',
+parser.add_argument('--model', default='logs/model_best.pth.tar', type=str, metavar='PATH',
                     help='path to the model (default: none)')
-parser.add_argument('--save', default='.', type=str, metavar='PATH',
+parser.add_argument('--save', default='./', type=str, metavar='PATH',
                     help='path to save pruned model (default: none)')
 
 args = parser.parse_args()
@@ -32,8 +32,8 @@ if not os.path.exists(args.save):
     os.makedirs(args.save)
 
 model = vgg(dataset=args.dataset, depth=args.depth)
-if args.cuda:
-    model.cuda()
+#if args.cuda:
+#    model = torch.nn.DataParallel(model).cuda()
 
 if args.model:
     if os.path.isfile(args.model):
@@ -46,6 +46,9 @@ if args.model:
               .format(args.model, checkpoint['epoch'], best_prec1))
     else:
         print("=> no checkpoint found at '{}'".format(args.resume))
+
+if args.cuda:
+    model = torch.nn.DataParallel(model).cuda()
 
 print('Pre-processing Successful!')
 
@@ -68,13 +71,14 @@ def test(model):
         raise ValueError("No valid dataset is given.")
     model.eval()
     correct = 0
-    for data, target in test_loader:
-        if args.cuda:
-            data, target = data.cuda(), target.cuda()
-        data, target = Variable(data, volatile=True), Variable(target)
-        output = model(data)
-        pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
-        correct += pred.eq(target.data.view_as(pred)).cpu().sum()
+    with torch.no_grad():
+        for data, target in test_loader:
+            if args.cuda:
+                data, target = data.cuda(), target.cuda()
+            data, target = Variable(data), Variable(target)
+            output = model(data)
+            pred = output.data.max(1, keepdim=True)[1] # get the index of the max log-probability
+            correct += pred.eq(target.data.view_as(pred)).cpu().sum()
 
     print('\nTest set: Accuracy: {}/{} ({:.1f}%)\n'.format(
         correct, len(test_loader.dataset), 100. * correct / len(test_loader.dataset)))
@@ -108,7 +112,7 @@ for m in model.modules():
 
 newmodel = vgg(dataset=args.dataset, cfg=cfg)
 if args.cuda:
-    newmodel.cuda()
+    newmodel = nn.DataParallel(newmodel).cuda()
 
 start_mask = torch.ones(3)
 layer_id_in_cfg = 0
@@ -154,12 +158,12 @@ for [m0, m1] in zip(model.modules(), newmodel.modules()):
         m1.running_mean = m0.running_mean.clone()
         m1.running_var = m0.running_var.clone()
 
-torch.save({'cfg': cfg, 'state_dict': newmodel.state_dict()}, os.path.join(args.save, 'pruned.pth.tar'))
+torch.save({'cfg': cfg, 'state_dict': newmodel.module.state_dict()}, os.path.join(args.save, 'pruned.pth.tar'))
 print(newmodel)
 model = newmodel
 acc = test(model)
 
-num_parameters = sum([param.nelement() for param in newmodel.parameters()])
+num_parameters = sum([param.nelement() for param in newmodel.module.parameters()])
 with open(os.path.join(args.save, "prune.txt"), "w") as fp:
     fp.write("Number of parameters: \n"+str(num_parameters)+"\n")
     fp.write("Test accuracy: \n"+str(acc)+"\n")
